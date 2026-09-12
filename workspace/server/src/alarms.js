@@ -87,8 +87,14 @@ export function reconcileTempAlarms(room, recoverReason = '阈值调整后告警
   const threshold = type === 'high_temp' ? room.max_temp : room.min_temp;
   const keep = activeAlarmOfRoom(room.id, type);
   if (keep) {
-    db.prepare('UPDATE alarms SET value=?, threshold=? WHERE id=?')
-      .run(room.current_temp, threshold, keep.id);
+    // 告警仍成立：触发值/阈值/信息全部刷新为最新，避免列表里残留旧阈值的描述
+    db.prepare('UPDATE alarms SET value=?, threshold=?, message=? WHERE id=?')
+      .run(
+        room.current_temp,
+        threshold,
+        tempAlarmMessage(type, room.current_temp, threshold),
+        keep.id
+      );
     hub.broadcast('alarm:update', db.prepare('SELECT * FROM alarms WHERE id=?').get(keep.id));
   } else {
     createAlarm(room, type, room.current_temp, threshold,

@@ -94,6 +94,15 @@ export function StoreProvider({ children }) {
             break;
           case 'room:remove':
             setRooms((prev) => prev.filter((r) => r.id !== payload.id));
+            // 后端已级联删除该库的告警与工单，本地列表同步移除（含告警历史页）
+            setAlarms((prev) => {
+              const ids = new Set(payload.alarmIds || []);
+              return prev.filter((a) => a.room_id !== payload.id && !ids.has(a.id));
+            });
+            setTasks((prev) => {
+              const ids = new Set(payload.taskIds || []);
+              return prev.filter((t) => t.room_id !== payload.id && !ids.has(t.id));
+            });
             refreshStats();
             break;
           case 'alarm:new':

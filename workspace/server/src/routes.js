@@ -244,10 +244,17 @@ router.delete('/rooms/:id', (req, res) => {
   const id = Number(req.params.id);
   const room = getRoom(id);
   if (!room) return res.status(404).json({ error: '冷库不存在' });
+
+  // 先查出将被级联删除的记录 ID，连同删除事件一起广播，供看板即时清理本地状态
+  const alarmIds = db.prepare('SELECT id FROM alarms WHERE room_id=?').all(id).map((r) => r.id);
+  const taskIds = db.prepare('SELECT id FROM tasks WHERE room_id=?').all(id).map((r) => r.id);
   db.prepare('DELETE FROM rooms WHERE id = ?').run(id);
-  hub.broadcast('room:remove', { id });
-  hub.broadcast('toast', { level: 'warning', text: `冷库「${room.name}」及其历史数据、告警与工单已删除` });
-  res.json({ ok: true });
+  hub.broadcast('room:remove', { id, alarmIds, taskIds });
+  hub.broadcast('toast', {
+    level: 'warning',
+    text: `冷库「${room.name}」已删除（级联清理 ${alarmIds.length} 条告警、${taskIds.length} 张工单）`,
+  });
+  res.json({ ok: true, alarmIds, taskIds });
 });
 
 router.get('/rooms/:id', (req, res) => {
@@ -392,13 +399,15 @@ router.post('/sim/event', (req, res) => {
 // ---------- 看板统计 ----------
 router.get('/stats', (req, res) => {
   const rooms = listRooms();
-  const online = rooms.filter((r) => r.status === 'online').length;
-  const reporting = rooms.filter((r) => r.current_temp != null);
-  const inRange = reporting.filter(
-    (r) => r.status === 'online' && r.current_temp >= r.min_temp && r.current_temp <= r.max_temp
-  ).length;
+  const offline = rooms.filter((r) => r.status === 'offline').length;
   const noData = rooms.filter((r) => r.status === 'online' && r.current_temp == null).length;
-  const abnormal = online - inRange - noData;
+  // 只有收到过读数的在线冷库才算"在线监控中"；新建档未上报的计入"待上报"
+  const reportingRooms = rooms.filter((r) => r.status === 'online' && r.current_temp != null);
+  const online = reportingRooms.length;
+  const inRange = reportingRooms.filter(
+    (r) => r.current_temp >= r.min_temp && r.current_temp <= r.max_temp
+  ).length;
+  const abnormal = online - inRange;
   const activeAlarmCount = db.prepare(
     `SELECT COUNT(*) c, SUM(level>=3) urgent FROM alarms WHERE status!='recovered'`
   ).get();
@@ -408,10 +417,10 @@ router.get('/stats', (req, res) => {
   res.json({
     total: rooms.length,
     online,
-    offline: rooms.length - online,
+    offline,
+    noData,
     inRange,
     abnormal,
-    noData,
     activeAlarms: activeAlarmCount.c,
     urgentAlarms: activeAlarmCount.urgent || 0,
     pendingTasks,

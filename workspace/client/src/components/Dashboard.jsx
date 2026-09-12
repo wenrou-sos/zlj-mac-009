@@ -16,9 +16,20 @@ export default function Dashboard() {
 
   const cards = [
     { label: '冷库总数', value: stats?.total ?? rooms.length, icon: '🏭', cls: 'info' },
-    { label: '在线 / 离线', value: stats?.online ?? 0, suffix: stats ? ` / ${stats.offline}` : '', icon: '📡', cls: stats?.offline ? 'warn' : 'ok' },
-    { label: '温度正常', value: stats?.inRange ?? 0, icon: '❄️', cls: 'ok' },
-    { label: '温度异常 / 离线', value: stats?.abnormal ?? 0, icon: '🌡️', cls: stats?.abnormal ? 'danger' : '' },
+    {
+      label: '在线监控',
+      value: stats?.online ?? 0,
+      suffix: stats?.offline ? ` / 离线 ${stats.offline}` : '',
+      icon: '📡',
+      cls: stats?.offline ? 'warn' : 'ok',
+    },
+    {
+      label: '待上报（新建档）',
+      value: stats?.noData ?? 0,
+      icon: '🆕',
+      cls: stats?.noData ? 'warn' : '',
+    },
+    { label: '温度异常', value: stats?.abnormal ?? 0, icon: '🌡️', cls: stats?.abnormal ? 'danger' : 'ok' },
     { label: '活动告警', value: activeAlarms.length, icon: '🚨', cls: activeAlarms.length ? 'danger' : '', urgent },
     { label: '进行中工单', value: stats?.pendingTasks ?? 0, icon: '🔧', cls: stats?.pendingTasks ? 'warn' : 'ok' },
   ];
