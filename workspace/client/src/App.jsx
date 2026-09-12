@@ -5,6 +5,8 @@ import Dashboard from './components/Dashboard.jsx';
 import AlarmsPage from './components/AlarmsPage.jsx';
 import TasksPage from './components/TasksPage.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
+import FacilitiesPage from './components/FacilitiesPage.jsx';
+import RoomDetail from './components/RoomDetail.jsx';
 import Toasts from './components/Toasts.jsx';
 
 function Clock() {
@@ -59,6 +61,9 @@ function Header({ page, setPage }) {
         <button className={page === 'settings' ? 'active' : ''} onClick={() => setPage('settings')}>
           心跳参数
         </button>
+        <button className={page === 'facilities' ? 'active' : ''} onClick={() => setPage('facilities')}>
+          冷库档案
+        </button>
       </nav>
       <div className="header-right">
         <button className="btn-sm" onClick={randomFault} title="随机挑选一个冷库注入故障，用于演示告警与工单流程">
@@ -76,6 +81,7 @@ function Header({ page, setPage }) {
 
 function Shell() {
   const [page, setPage] = useState('dashboard');
+  const [historyRoom, setHistoryRoom] = useState(null);
   return (
     <>
       <Header page={page} setPage={setPage} />
@@ -84,6 +90,12 @@ function Shell() {
         {page === 'alarms' && <AlarmsPage />}
         {page === 'tasks' && <TasksPage />}
         {page === 'settings' && <SettingsPage />}
+        {page === 'facilities' && (
+          <FacilitiesPage onOpenHistory={(id) => setHistoryRoom(id)} />
+        )}
+        {historyRoom != null && (
+          <RoomDetail roomId={historyRoom} onClose={() => setHistoryRoom(null)} />
+        )}
       </main>
       <Toasts />
     </>

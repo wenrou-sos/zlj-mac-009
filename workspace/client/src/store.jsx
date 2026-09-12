@@ -26,6 +26,14 @@ export function StoreProvider({ children }) {
   }, []);
 
   // ---- 初始加载 ----
+  const refreshStats = useCallback(async () => {
+    try {
+      setStats(await api.get('/stats'));
+    } catch {
+      /* 静默 */
+    }
+  }, []);
+
   const refreshAll = useCallback(async () => {
     try {
       const [ov, al, tk, st] = await Promise.all([
@@ -79,6 +87,14 @@ export function StoreProvider({ children }) {
             break;
           case 'room:update':
             setRooms((prev) => mergeRooms(prev, [payload]));
+            break;
+          case 'room:new':
+            // 新库的生效心跳配置与空曲线直接重新拉取概览，避免手工拼装不一致
+            refreshAll();
+            break;
+          case 'room:remove':
+            setRooms((prev) => prev.filter((r) => r.id !== payload.id));
+            refreshStats();
             break;
           case 'alarm:new':
             setAlarms((a) => [payload.alarm, ...a]);

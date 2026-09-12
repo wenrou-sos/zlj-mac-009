@@ -7,7 +7,7 @@ const COLUMNS = [
   { key: 'pending', title: '🔔 待接单', statuses: ['pending'] },
   { key: 'doing', title: '🔧 维修处理中', statuses: ['accepted', 'processing'] },
   { key: 'verify', title: '🔍 待恢复确认', statuses: ['done'] },
-  { key: 'closed', title: '✅ 已闭环', statuses: ['confirmed'] },
+  { key: 'closed', title: '✅ 已闭环 / 已取消', statuses: ['confirmed', 'self_healed'] },
 ];
 
 export default function TasksPage() {
@@ -105,6 +105,9 @@ export default function TasksPage() {
                       )}
                       {t.status === 'confirmed' && (
                         <span className="dim">闭环于 {fmtTime(t.confirmed_at)}</span>
+                      )}
+                      {t.status === 'self_healed' && (
+                        <span className="dim">系统于 {fmtTime(t.done_at)} 自动取消（无需维修）</span>
                       )}
                     </div>
                     <div className="dim" style={{ marginTop: 8 }}>

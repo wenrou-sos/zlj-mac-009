@@ -51,24 +51,53 @@ function createAlarm(room, type, value, threshold, message) {
 }
 
 // ---------- 温度阈值判定 ----------
+const tempAlarmMessage = (type, temp, threshold) =>
+  type === 'high_temp'
+    ? `温度 ${temp}℃ 超过上限 ${threshold}℃`
+    : `温度 ${temp}℃ 低于下限 ${threshold}℃`;
+
+function violatingType(room) {
+  const t = room.current_temp;
+  if (t == null) return null;
+  if (t > room.max_temp) return 'high_temp';
+  if (t < room.min_temp) return 'low_temp';
+  return null;
+}
+
 export function evaluateTemperature(room) {
-  const temp = room.current_temp;
-  if (room.status !== 'online' || temp == null) return;
-  if (temp > room.max_temp) {
-    const existing = activeAlarmOfRoom(room.id, 'high_temp');
-    if (!existing) {
-      createAlarm(room, 'high_temp', temp, room.max_temp,
-        `温度 ${temp}℃ 超过上限 ${room.max_temp}℃`);
-    }
-  } else if (temp < room.min_temp) {
-    const existing = activeAlarmOfRoom(room.id, 'low_temp');
-    if (!existing) {
-      createAlarm(room, 'low_temp', temp, room.min_temp,
-        `温度 ${temp}℃ 低于下限 ${room.min_temp}℃`);
-    }
+  if (room.status !== 'online' || room.current_temp == null) return;
+  reconcileTempAlarms(room, '温度回归正常区间');
+}
+
+/**
+ * 按冷库当前温度与现行阈值重算温度类活动告警（新读数到达、阈值编辑后共用）：
+ *  - 越上限/下限：同类型告警保留并把触发值/阈值刷新为最新；矛盾的另一类型自动恢复；都没有则新建
+ *  - 处于正常区间：恢复所有温度类活动告警
+ *  - 离线：不做温度侧处理（没有新读数，不用旧温度判定）
+ */
+export function reconcileTempAlarms(room, recoverReason = '阈值调整后告警不再成立') {
+  if (room.status !== 'online') return;
+  const type = violatingType(room);
+
+  if (!type) {
+    recoverRoomAlarms(room.id, ['high_temp', 'low_temp'], recoverReason);
+    return;
+  }
+
+  const threshold = type === 'high_temp' ? room.max_temp : room.min_temp;
+  const keep = activeAlarmOfRoom(room.id, type);
+  if (keep) {
+    db.prepare('UPDATE alarms SET value=?, threshold=? WHERE id=?')
+      .run(room.current_temp, threshold, keep.id);
+    hub.broadcast('alarm:update', db.prepare('SELECT * FROM alarms WHERE id=?').get(keep.id));
   } else {
-    // 温度回归正常区间：自动恢复该库所有温度类活动告警
-    recoverRoomAlarms(room.id, ['high_temp', 'low_temp'], '温度回归正常区间');
+    createAlarm(room, type, room.current_temp, threshold,
+      tempAlarmMessage(type, room.current_temp, threshold));
+  }
+  // 阈值调整后可能出现"旧的越限方向与新阈值矛盾"（如原高温告警，新上限放宽）
+  const other = type === 'high_temp' ? 'low_temp' : 'high_temp';
+  if (activeAlarmOfRoom(room.id, other)) {
+    recoverRoomAlarms(room.id, [other], recoverReason);
   }
 }
 
@@ -137,6 +166,17 @@ export function recoverRoomAlarms(roomId, types, reason) {
       level: 'success',
       text: `[恢复] ${typeLabel(alarm.type)} · ${reason}`,
     });
+
+    // 告警在工单尚未被接单前就自动恢复（抖动自愈/温度自行回区）：
+    // 自动取消待接单工单，避免维修人员接到已不存在的"幽灵工单"；已接单/处理中的保留人工闭环
+    const pendingTask = db
+      .prepare(`SELECT * FROM tasks WHERE alarm_id=? AND status='pending'`)
+      .get(alarm.id);
+    if (pendingTask) {
+      db.prepare(`UPDATE tasks SET status='self_healed', result_note=?, done_at=? WHERE id=?`)
+        .run(`告警已自动恢复：${reason}`, ts, pendingTask.id);
+      hub.broadcast('task:update', db.prepare('SELECT * FROM tasks WHERE id=?').get(pendingTask.id));
+    }
   }
 }
 

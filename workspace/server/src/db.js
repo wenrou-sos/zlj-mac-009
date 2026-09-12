@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   title       TEXT NOT NULL,
   description TEXT NOT NULL,
   priority    INTEGER NOT NULL DEFAULT 1,  -- 与告警等级联动
-  status      TEXT NOT NULL DEFAULT 'pending', -- pending / accepted / processing / done / confirmed
+  status      TEXT NOT NULL DEFAULT 'pending', -- pending / accepted / processing / done / confirmed / self_healed
   assignee    TEXT,
   result_note TEXT,
   accepted_at INTEGER,
@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 `);
+
+// 冷库编号在表定义内已 UNIQUE；传感器编号通过唯一索引约束（同时为旧库补建）
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_sensor_code ON rooms(sensor_code)');
 
 // ---- 轻量迁移：为旧库补充心跳配置列 ----
 for (const col of ['report_interval_ms', 'offline_timeout_ms']) {

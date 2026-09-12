@@ -18,6 +18,7 @@ export const TASK_STATUS = {
   processing: { label: '维修中', cls: 'amber' },
   done: { label: '待恢复确认', cls: 'violet' },
   confirmed: { label: '已闭环', cls: 'green' },
+  self_healed: { label: '自愈取消', cls: 'cyan' },
 };
 
 // 汇总某个冷库当前最严重的活动告警等级

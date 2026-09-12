@@ -5,6 +5,7 @@ import db, {
   DEFAULT_REPORT_INTERVAL_MS, DEFAULT_OFFLINE_TIMEOUT_MS,
 } from './db.js';
 import { triggerEvent } from './simulator.js';
+import { reconcileTempAlarms } from './alarms.js';
 import { hub } from './ws.js';
 
 export const router = Router();
@@ -116,6 +117,137 @@ router.put('/rooms/:id/heartbeat', (req, res) => {
   const updated = getRoom(room.id);
   hub.broadcast('room:update', updated);
   res.json({ room: updated, effective: effectiveSchedule(updated) });
+});
+
+// ---------- 冷库档案维护 ----------
+const KINDS = ['冷冻库', '冷藏库', '深冷库', '速冻库', '恒温库'];
+const TEMP_BOUNDS = { min: -60, max: 40 };
+const VOLUME_BOUNDS = { min: 10, max: 100000 };
+
+const trim = (v, max = 30) => String(v ?? '').trim().slice(0, max);
+
+// 校验/规整档案字段。partial=true 时仅校验出现的字段（编辑），温区关系按合并后的最终值校验
+function validateRoomPayload(body, existing = null, partial = false) {
+  const pick = (key, fallback) => {
+    if (Object.prototype.hasOwnProperty.call(body, key)) return body[key];
+    return existing ? existing[key] : fallback;
+  };
+  const code = trim(pick('code', ''), 20);
+  const name = trim(pick('name', ''), 30);
+  const zone = trim(pick('zone', ''), 10);
+  const kind = trim(pick('kind', ''), 10);
+  const sensor_code = trim(pick('sensor_code', ''), 30);
+  const min_temp = Number(pick('min_temp', NaN));
+  const max_temp = Number(pick('max_temp', NaN));
+  const target_temp = Number(pick('target_temp', NaN));
+  const volume = Number(pick('volume', NaN));
+
+  const errors = [];
+  if (!partial || Object.hasOwn(body, 'code')) { if (!code) errors.push('冷库编号不能为空'); }
+  if (!partial || Object.hasOwn(body, 'name')) { if (!name) errors.push('冷库名称不能为空'); }
+  if (!partial || Object.hasOwn(body, 'zone')) { if (!zone) errors.push('库区不能为空'); }
+  if (!partial || Object.hasOwn(body, 'sensor_code')) { if (!sensor_code) errors.push('传感器编号不能为空'); }
+  if (!partial || Object.hasOwn(body, 'kind')) {
+    if (!KINDS.includes(kind)) errors.push(`冷库类型必须为：${KINDS.join(' / ')}`);
+  }
+  const checkRange = (label, v) => {
+    if (!Number.isFinite(v)) errors.push(`${label}必须是数字`);
+    else if (v < TEMP_BOUNDS.min || v > TEMP_BOUNDS.max) {
+      errors.push(`${label}允许范围 ${TEMP_BOUNDS.min}℃ ~ ${TEMP_BOUNDS.max}℃`);
+    }
+  };
+  checkRange('下限温度', min_temp);
+  checkRange('上限温度', max_temp);
+  checkRange('目标温度', target_temp);
+  if (!Number.isFinite(volume) || volume < VOLUME_BOUNDS.min || volume > VOLUME_BOUNDS.max) {
+    errors.push(`容积允许范围 ${VOLUME_BOUNDS.min} ~ ${VOLUME_BOUNDS.max} m³`);
+  }
+  if (errors.length === 0) {
+    if (min_temp >= max_temp) errors.push('下限温度必须严格小于上限温度');
+    if (target_temp < min_temp || target_temp > max_temp) {
+      errors.push(`目标温度必须落在 [${min_temp}℃, ${max_temp}℃] 区间内`);
+    }
+    if (max_temp - min_temp < 1) errors.push('温区上下限至少相差 1℃');
+  }
+  if (errors.length) return { error: errors.join('；') };
+
+  return { data: { code, name, zone, kind, sensor_code, min_temp, max_temp, target_temp, volume } };
+}
+
+// 编号唯一性（编辑时排除自身）
+function assertUnique({ code, sensor_code }, exceptId = null) {
+  const byCode = db.prepare('SELECT id, name FROM rooms WHERE code = ?').get(code);
+  if (byCode && byCode.id !== exceptId) {
+    return `冷库编号「${code}」已被「${byCode.name}」占用`;
+  }
+  const bySensor = db.prepare('SELECT id, name FROM rooms WHERE sensor_code = ?').get(sensor_code);
+  if (bySensor && bySensor.id !== exceptId) {
+    return `传感器编号「${sensor_code}」已被「${bySensor.name}」占用`;
+  }
+  return null;
+}
+
+// 新增冷库（上线前没有读数，看门狗不会误判，曲线与温度为空）
+router.post('/rooms', (req, res) => {
+  const check = validateRoomPayload(req.body, null, false);
+  if (check.error) return res.status(400).json({ error: check.error });
+  const dup = assertUnique(check.data);
+  if (dup) return res.status(409).json({ error: dup });
+
+  const ts = now();
+  const info = db.prepare(`
+    INSERT INTO rooms (code,name,zone,kind,min_temp,max_temp,target_temp,volume,sensor_code,
+                       status,current_temp,last_report_at,created_at)
+    VALUES (@code,@name,@zone,@kind,@min_temp,@max_temp,@target_temp,@volume,@sensor_code,
+            'online',NULL,NULL,@created_at)
+  `).run({ ...check.data, created_at: ts });
+  const room = getRoom(info.lastInsertRowid);
+  hub.broadcast('room:new', room);
+  hub.broadcast('toast', { level: 'info', text: `新冷库「${room.name}」（${room.code}）已建档，等待探头上报数据` });
+  res.status(201).json({ ...room, effective_schedule: effectiveSchedule(room) });
+});
+
+// 编辑档案 / 温区
+router.put('/rooms/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const existing = getRoom(id);
+  if (!existing) return res.status(404).json({ error: '冷库不存在' });
+
+  const check = validateRoomPayload(req.body, existing, true);
+  if (check.error) return res.status(400).json({ error: check.error });
+  const dup = assertUnique(check.data, id);
+  if (dup) return res.status(409).json({ error: dup });
+
+  const d = check.data;
+  db.prepare(`
+    UPDATE rooms SET code=@code, name=@name, zone=@zone, kind=@kind, sensor_code=@sensor_code,
+                     min_temp=@min_temp, max_temp=@max_temp, target_temp=@target_temp, volume=@volume
+    WHERE id=@id
+  `).run({ ...d, id });
+
+  const updated = getRoom(id);
+  hub.broadcast('room:update', updated);
+
+  // 关键：温区改完立即按新阈值重算活动温度告警，不允许留下与新阈值矛盾的告警
+  const rangeChanged =
+    d.min_temp !== existing.min_temp ||
+    d.max_temp !== existing.max_temp ||
+    d.target_temp !== existing.target_temp;
+  if (rangeChanged) {
+    reconcileTempAlarms(updated, '温区阈值已调整，告警按新阈值复核');
+  }
+  res.json({ ...updated, effective_schedule: effectiveSchedule(updated) });
+});
+
+// 删除冷库（告警/工单/读数通过外键级联删除）
+router.delete('/rooms/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const room = getRoom(id);
+  if (!room) return res.status(404).json({ error: '冷库不存在' });
+  db.prepare('DELETE FROM rooms WHERE id = ?').run(id);
+  hub.broadcast('room:remove', { id });
+  hub.broadcast('toast', { level: 'warning', text: `冷库「${room.name}」及其历史数据、告警与工单已删除` });
+  res.json({ ok: true });
 });
 
 router.get('/rooms/:id', (req, res) => {
@@ -261,10 +393,12 @@ router.post('/sim/event', (req, res) => {
 router.get('/stats', (req, res) => {
   const rooms = listRooms();
   const online = rooms.filter((r) => r.status === 'online').length;
-  const inRange = rooms.filter(
-    (r) => r.status === 'online' && r.current_temp != null &&
-      r.current_temp >= r.min_temp && r.current_temp <= r.max_temp
+  const reporting = rooms.filter((r) => r.current_temp != null);
+  const inRange = reporting.filter(
+    (r) => r.status === 'online' && r.current_temp >= r.min_temp && r.current_temp <= r.max_temp
   ).length;
+  const noData = rooms.filter((r) => r.status === 'online' && r.current_temp == null).length;
+  const abnormal = online - inRange - noData;
   const activeAlarmCount = db.prepare(
     `SELECT COUNT(*) c, SUM(level>=3) urgent FROM alarms WHERE status!='recovered'`
   ).get();
@@ -276,7 +410,8 @@ router.get('/stats', (req, res) => {
     online,
     offline: rooms.length - online,
     inRange,
-    abnormal: rooms.length - inRange,
+    abnormal,
+    noData,
     activeAlarms: activeAlarmCount.c,
     urgentAlarms: activeAlarmCount.urgent || 0,
     pendingTasks,

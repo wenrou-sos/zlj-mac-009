@@ -49,14 +49,21 @@ SQLite 数据文件位于 `server/data/coldchain.db`，首次启动自动建表�
 - 按冷库覆盖：`rooms.report_interval_ms / offline_timeout_ms`，留空即继承全局（`PUT /api/rooms/:id/heartbeat`）
 - 冷库卡片、详情弹窗与参数页都能看到生效周期、超时阈值和最后上报时间
 
-### 5. 维修工单闭环
+### 5. 冷库档案与温区维护（「冷库档案」页）
+- 新增冷库（新探头接入）、编辑编号/名称/库区/类型/温区/目标/库容/传感器编号、删除（历史读数/告警/工单级联）
+- 校验：目标温度必须落在 [min, max] 内且 min < max（至少相差 1℃）；温度取值 -60~40℃；容积 10~100000m³；冷库编号与传感器编号全局唯一（重复返回 409）
+- **温区改完立即生效**：`PUT /api/rooms/:id` 后用当前温度按新阈值即时复核活动告警——不成立的高温/低温告警立即恢复（无需等下一拍读数），新越限的立即生成告警与工单；历史曲线的正常温区与阈值线同步更新
+- 新冷库无需重启：模拟器下一拍自动接管；尚无读数时状态为「待上报」，不计入温度异常
+- 告警在工单被接单前自动恢复（抖动自愈 / 调阈值解除）时，待接单工单自动置为「自愈取消」；已接单/维修中的工单保留，由维修人员人工闭环
+
+### 6. 维修工单闭环
 `待接单 → 已接单 → 维修中 → 待恢复确认 → 已闭环`
 
 - 接单（记录处理人）→ 开始维修 → 填报维修记录（可标记"已修复"或"待备件"）
 - **恢复确认**：必须等关联告警真正恢复（温度回区 / 传感器上线）才能闭环，后端强校验
 - 告警中心可对告警确认受理（停止升级）
 
-### 6. 模拟与实时推送
+### 7. 模拟与实时推送
 - 每张冷库卡片的「模拟 ▾」菜单可注入故障/恢复
 - 顶部「🎲 随机故障演练」随机挑选冷库制造故障
 - 所有事件经 WebSocket 广播：新告警、升级、恢复、工单流转，右下角实时 Toast 提示，断线 3 秒自动重连
@@ -68,6 +75,9 @@ SQLite 数据文件位于 `server/data/coldchain.db`，首次启动自动建表�
 | GET | `/api/overview` | 冷库快照 + 近 60 分钟曲线点 |
 | GET | `/api/rooms/:id/history?hours=24` | 历史读数（≤72h，返回 `partial/covered_from` 标识实际覆盖范围） |
 | GET | `/api/alarms?all=1` | 活动告警 / 全部告警 |
+| POST | `/api/rooms` | 新建立库档案（全字段校验 + 唯一性） |
+| PUT | `/api/rooms/:id` | 编辑档案/温区（部分字段更新；温区变更后即时重判活动告警） |
+| DELETE | `/api/rooms/:id` | 删除冷库（读数/告警/工单级联） |
 | POST | `/api/alarms/:id/ack` | 确认受理（停止升级） |
 | GET | `/api/tasks` | 工单列表（可按 status 过滤） |
 | POST | `/api/tasks/:id/accept` | 维修接单 |
@@ -87,10 +97,10 @@ server/src/
   db.js         SQLite 建表与查询
   seed.js       冷库档案与 72h 历史回填（事务）
   simulator.js  温度模拟（随机游走、昼夜波动、故障注入、离线抖动）
-  alarms.js     阈值判定、告警创建/恢复、自动升级
+  alarms.js     阈值判定、告警创建/恢复、温区变更重算、自动升级
   routes.js     REST API
   ws.js         WebSocket 广播总线
 client/src/
   store.jsx     全局状态 + WebSocket 订阅 + 断线重连
-  components/   Dashboard / RoomCard / RoomDetail / AlarmsPage / TasksPage ...
+  components/   Dashboard / FacilitiesPage / RoomForm / AlarmsPage / TasksPage ...
 ```
