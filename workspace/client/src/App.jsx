@@ -4,6 +4,7 @@ import { api } from './api.js';
 import Dashboard from './components/Dashboard.jsx';
 import AlarmsPage from './components/AlarmsPage.jsx';
 import TasksPage from './components/TasksPage.jsx';
+import SettingsPage from './components/SettingsPage.jsx';
 import Toasts from './components/Toasts.jsx';
 
 function Clock() {
@@ -55,6 +56,9 @@ function Header({ page, setPage }) {
           维修工单
           {todoCount > 0 && <span className="badge-count">{todoCount}</span>}
         </button>
+        <button className={page === 'settings' ? 'active' : ''} onClick={() => setPage('settings')}>
+          心跳参数
+        </button>
       </nav>
       <div className="header-right">
         <button className="btn-sm" onClick={randomFault} title="随机挑选一个冷库注入故障，用于演示告警与工单流程">
@@ -79,6 +83,7 @@ function Shell() {
         {page === 'dashboard' && <Dashboard onGoTasks={() => setPage('tasks')} />}
         {page === 'alarms' && <AlarmsPage />}
         {page === 'tasks' && <TasksPage />}
+        {page === 'settings' && <SettingsPage />}
       </main>
       <Toasts />
     </>

@@ -79,7 +79,16 @@ export default function RoomCard({ room, onOpen }) {
         <span className={`badge ${offline ? 'gray' : 'green'}`}>
           {offline ? '● 传感器离线' : '● 在线'}
         </span>
-        <span className="dim">上报于 {ago(room.last_report_at)}</span>
+        <span className="dim">
+          {offline ? '最后上报 ' : '上报于 '}
+          {ago(room.last_report_at)}
+        </span>
+      </div>
+      <div className="rc-foot" style={{ marginTop: 3 }}>
+        <span className="dim">
+          心跳周期 {((room.effective_schedule?.interval ?? 5000) / 1000).toFixed(0)}s ·
+          超时 {((room.effective_schedule?.timeout ?? 15000) / 1000).toFixed(0)}s 判离线
+        </span>
       </div>
     </div>
   );

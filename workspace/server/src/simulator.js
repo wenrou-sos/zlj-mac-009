@@ -1,6 +1,6 @@
-import db, { now, listRooms, insertReading, getRoom } from './db.js';
+import { now, listRooms, getRoom } from './db.js';
 import { TICK_MS } from './seed.js';
-import { evaluateTemperature, markOffline, markOnline } from './alarms.js';
+import { ingestReading } from './alarms.js';
 import { hub } from './ws.js';
 
 /**
@@ -78,20 +78,11 @@ function tick() {
   for (const room of listRooms()) {
     const s = stateOf(room);
 
-    // ---- 离线路径：不产生读数 ----
+    // ---- 无读数路径：不产生读数即无心跳，离线由看门狗按超时阈值判定 ----
     if (s.forceOffline || s.dropoutTicks > 0) {
-      if (room.status === 'online') {
-        markOffline(room.id, s.forceOffline ? '信号中断' : '通信抖动');
-      }
       if (s.dropoutTicks > 0) s.dropoutTicks -= 1;
-      if (!s.forceOffline && s.dropoutTicks === 0 && room.status === 'offline') {
-        markOnline(room.id); // 自发性抖动恢复
-      }
       continue;
     }
-
-    // ---- 在线路径 ----
-    if (room.status === 'offline') markOnline(room.id);
 
     // 偏移平滑逼近目标（模拟库温升降的惯性）
     const delta = s.biasTarget - s.bias;
@@ -102,13 +93,11 @@ function tick() {
     const noise = (Math.random() - 0.5) * 0.35;
     const temp = +(room.target_temp + wave + s.bias + s.walk + noise).toFixed(2);
 
-    insertReading(room.id, temp, ts);
-    db.prepare('UPDATE rooms SET current_temp=?, last_report_at=? WHERE id=?')
-      .run(temp, ts, room.id);
+    // 读数入库（即心跳）：内部统一处理上线恢复与温度越限判定
+    ingestReading(room.id, temp, ts);
 
-    evaluateTemperature({ ...room, current_temp: temp, status: 'online' });
-
-    // 极小概率自发性无线抖动，持续 2~7 个 tick（演示传感器离线）
+    // 极小概率自发性无线抖动，持续 2~7 个周期；
+    // 仅 2 个周期的抖动（10s < 默认超时 15s）不会触发离线告警
     if (!s.forceOffline && Math.random() < 0.0025) {
       s.dropoutTicks = 2 + Math.floor(Math.random() * 6);
     }

@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import db, {
   listRooms, getRoom, readingsSince, activeAlarms, allAlarms,
-  listTasks, now,
+  listTasks, now, getSettings, setSetting, effectiveSchedule,
+  DEFAULT_REPORT_INTERVAL_MS, DEFAULT_OFFLINE_TIMEOUT_MS,
 } from './db.js';
 import { triggerEvent } from './simulator.js';
 import { hub } from './ws.js';
@@ -19,6 +20,7 @@ router.get('/overview', (req, res) => {
   );
   const data = rooms.map((r) => ({
     ...r,
+    effective_schedule: effectiveSchedule(r),
     spark: stmt.all(r.id, since),
   }));
   res.json(data);
@@ -26,13 +28,83 @@ router.get('/overview', (req, res) => {
 
 // ---------- 冷库 ----------
 router.get('/rooms', (req, res) => {
-  res.json(listRooms());
+  res.json(listRooms().map((r) => ({ ...r, effective_schedule: effectiveSchedule(r) })));
+});
+
+// 心跳参数（全局默认 + 各冷库生效值）
+router.get('/heartbeat-config', (req, res) => {
+  const global = getSettings();
+  res.json({
+    global,
+    defaults: {
+      report_interval_ms: DEFAULT_REPORT_INTERVAL_MS,
+      offline_timeout_ms: DEFAULT_OFFLINE_TIMEOUT_MS,
+    },
+    rooms: listRooms().map((r) => ({
+      id: r.id,
+      code: r.code,
+      name: r.name,
+      report_interval_ms: r.report_interval_ms,
+      offline_timeout_ms: r.offline_timeout_ms,
+      effective: effectiveSchedule(r),
+    })),
+  });
+});
+
+// 更新全局心跳参数
+router.put('/settings', (req, res) => {
+  const parseInt10 = (v) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? n : null;
+  };
+  const cur = getSettings();
+  const interval = parseInt10(req.body?.report_interval_ms) ?? cur.report_interval_ms;
+  const timeout = parseInt10(req.body?.offline_timeout_ms) ?? cur.offline_timeout_ms;
+  if (interval < 1000 || interval > 60000) {
+    return res.status(400).json({ error: '上报周期允许范围 1~60 秒' });
+  }
+  if (timeout < 5000 || timeout > 300000) {
+    return res.status(400).json({ error: '离线超时阈值允许范围 5~300 秒' });
+  }
+  if (timeout < interval) {
+    return res.status(400).json({ error: '离线超时阈值不能小于上报周期，否则会频繁误报离线' });
+  }
+  setSetting('report_interval_ms', interval);
+  setSetting('offline_timeout_ms', timeout);
+  res.json(getSettings());
+});
+
+// 按冷库设置心跳覆盖；传 null 表示恢复继承全局
+router.put('/rooms/:id/heartbeat', (req, res) => {
+  const room = getRoom(Number(req.params.id));
+  if (!room) return res.status(404).json({ error: '冷库不存在' });
+  const toNullableInt = (v) => (v == null || v === '' ? null : Math.round(Number(v)));
+  const interval = toNullableInt(req.body?.report_interval_ms);
+  const timeout = toNullableInt(req.body?.offline_timeout_ms);
+
+  const g = getSettings();
+  const effInterval = interval ?? g.report_interval_ms;
+  const effTimeout = timeout ?? g.offline_timeout_ms;
+  if (interval != null && !(interval >= 1000 && interval <= 60000)) {
+    return res.status(400).json({ error: '上报周期允许范围 1~60 秒' });
+  }
+  if (timeout != null && !(timeout >= 5000 && timeout <= 300000)) {
+    return res.status(400).json({ error: '超时阈值允许范围 5~300 秒' });
+  }
+  if (effTimeout < effInterval) {
+    return res.status(400).json({ error: '该冷库超时阈值不能小于上报周期' });
+  }
+  db.prepare('UPDATE rooms SET report_interval_ms=?, offline_timeout_ms=? WHERE id=?')
+    .run(interval, timeout, room.id);
+  const updated = getRoom(room.id);
+  hub.broadcast('room:update', updated);
+  res.json({ room: updated, effective: effectiveSchedule(updated) });
 });
 
 router.get('/rooms/:id', (req, res) => {
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).json({ error: '冷库不存在' });
-  res.json(room);
+  res.json({ ...room, effective_schedule: effectiveSchedule(room) });
 });
 
 router.get('/rooms/:id/history', (req, res) => {

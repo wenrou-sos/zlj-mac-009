@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 
 import { seedIfEmpty, pruneReadings } from './seed.js';
 import { startSimulator } from './simulator.js';
-import { runEscalationSweep } from './alarms.js';
+import { runEscalationSweep, runOfflineWatchdog } from './alarms.js';
 import { router } from './routes.js';
 import { hub } from './ws.js';
 
@@ -36,5 +36,6 @@ server.listen(PORT, () => {
 });
 
 startSimulator();
+setInterval(runOfflineWatchdog, 5_000);      // 心跳看门狗：按最后上报时间超时判定离线
 setInterval(runEscalationSweep, 15_000);   // 每 15s 扫描一次告警升级
 setInterval(pruneReadings, 30 * 60_000);  // 定期清理超期读数

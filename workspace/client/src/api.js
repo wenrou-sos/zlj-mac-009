@@ -12,6 +12,7 @@ async function request(path, options = {}) {
 export const api = {
   get: (p) => request(p),
   post: (p, body) => request(p, { method: 'POST', body: JSON.stringify(body || {}) }),
+  put: (p, body) => request(p, { method: 'PUT', body: JSON.stringify(body || {}) }),
 };
 
 export const fmtTime = (ts) => {

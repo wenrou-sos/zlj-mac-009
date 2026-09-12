@@ -1,4 +1,7 @@
-import db, { now, activeAlarmOfRoom, getRoom } from './db.js';
+import db, {
+  now, activeAlarmOfRoom, getRoom, listRooms,
+  recordReading, effectiveSchedule,
+} from './db.js';
 import { hub } from './ws.js';
 
 // 升级规则：未被确认的活动告警按停留时长逐级升级
@@ -51,7 +54,6 @@ function createAlarm(room, type, value, threshold, message) {
 export function evaluateTemperature(room) {
   const temp = room.current_temp;
   if (room.status !== 'online' || temp == null) return;
-
   if (temp > room.max_temp) {
     const existing = activeAlarmOfRoom(room.id, 'high_temp');
     if (!existing) {
@@ -70,24 +72,52 @@ export function evaluateTemperature(room) {
   }
 }
 
-// ---------- 离线 / 上线 ----------
-export function markOffline(roomId, reason = '通信超时') {
+// ---------- 离线判定（心跳超时看门狗） ----------
+// 按各冷库生效的超时阈值检查最后上报时间：短暂丢包（未超时）视为抖动，不产生告警
+export function runOfflineWatchdog(ts = now()) {
+  for (const room of listRooms()) {
+    if (room.status === 'offline' || room.last_report_at == null) continue;
+    const { timeout } = effectiveSchedule(room);
+    if (ts - room.last_report_at > timeout) {
+      const missed = Math.round((ts - room.last_report_at) / effectiveSchedule(room).interval);
+      markOffline(room.id, `心跳超时（连续约 ${missed} 个周期未上报，阈值 ${Math.round(timeout / 1000)}s）`);
+    }
+  }
+}
+
+// ---------- 离线 ----------
+export function markOffline(roomId, reason = '心跳超时') {
   const room = getRoom(roomId);
   if (!room || room.status === 'offline') return;
   db.prepare('UPDATE rooms SET status = ? WHERE id = ?').run('offline', roomId);
+  hub.broadcast('room:update', db.prepare('SELECT * FROM rooms WHERE id=?').get(roomId));
+  // 同一离线过程只告警一次：恢复上线后再次掉线才会重新生成告警与工单
   if (!activeAlarmOfRoom(roomId, 'sensor_offline')) {
     createAlarm({ ...room, status: 'offline' }, 'sensor_offline', null, null,
       `传感器 ${room.sensor_code} ${reason}`);
   }
 }
 
-export function markOnline(roomId) {
+/**
+ * 统一读数入口（心跳）：模拟器和未来的真实网关都走这里。
+ *  - 在线：入库并做温度判定
+ *  - 离线中收到读数：立即上线、解除离线告警/工单恢复，再判定温度
+ * 没有读数进来就不会更新 last_report_at，看门狗因此可以检出真实断连。
+ */
+export function ingestReading(roomId, temp, ts = now()) {
   const room = getRoom(roomId);
-  if (!room || room.status !== 'offline') return;
-  db.prepare('UPDATE rooms SET status = ? WHERE id = ?').run('online', roomId);
-  recoverRoomAlarms(roomId, ['sensor_offline'], '传感器通信恢复');
-  hub.broadcast('room:update', db.prepare('SELECT * FROM rooms WHERE id=?').get(roomId));
-  hub.broadcast('toast', { level: 'success', text: `${room.name} 传感器已上线` });
+  if (!room) return;
+  const wasOffline = room.status === 'offline';
+  recordReading(roomId, temp, ts);
+  const updated = getRoom(roomId);
+
+  if (wasOffline) {
+    hub.broadcast('room:update', updated);
+    recoverRoomAlarms(roomId, ['sensor_offline'], '传感器恢复上报');
+    hub.broadcast('toast', { level: 'success', text: `${room.name} 传感器已恢复上线` });
+  }
+  // 只有真正收到新读数才做温度判定，离线期间不会用陈旧温度重复越限
+  evaluateTemperature(updated);
 }
 
 // ---------- 恢复 ----------

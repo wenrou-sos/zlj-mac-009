@@ -3,7 +3,7 @@ import {
   ResponsiveContainer, ComposedChart, Area, Line, ReferenceLine,
   XAxis, YAxis, CartesianGrid, Tooltip, Brush,
 } from 'recharts';
-import { api, fmtTime, fmtHM } from '../api.js';
+import { api, fmtTime, fmtHM, ago } from '../api.js';
 import { useStore } from '../store.jsx';
 import { roomAlarmLevel, LEVEL, ALARM_TYPE } from '../labels.js';
 
@@ -86,6 +86,29 @@ export default function RoomDetail({ roomId, onClose }) {
             <div className="cell">
               <div className="l">最后上报</div>
               <div className="v" style={{ fontSize: 14 }}>{fmtTime(room?.last_report_at)}</div>
+            </div>
+          </div>
+
+          <div className="detail-meta">
+            <div className="cell">
+              <div className="l">通信状态</div>
+              <div className="v" style={{ fontSize: 15 }}>
+                {room?.status === 'offline'
+                  ? <span style={{ color: '#f87171' }}>📵 离线（{ago(room.last_report_at)}）</span>
+                  : <span style={{ color: '#4ade80' }}>● 在线</span>}
+              </div>
+            </div>
+            <div className="cell">
+              <div className="l">期望上报周期</div>
+              <div className="v">{((room?.effective_schedule?.interval ?? 5000) / 1000).toFixed(0)} 秒</div>
+            </div>
+            <div className="cell">
+              <div className="l">离线超时阈值</div>
+              <div className="v">{((room?.effective_schedule?.timeout ?? 15000) / 1000).toFixed(0)} 秒</div>
+            </div>
+            <div className="cell">
+              <div className="l">判定规则</div>
+              <div className="v" style={{ fontSize: 13, color: 'var(--text-dim)' }}>超时未收心跳即离线</div>
             </div>
           </div>
 

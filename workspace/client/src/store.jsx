@@ -173,7 +173,13 @@ function mergeRooms(prev, snapshot) {
         spark = [...spark.slice(-720), { temp: s.current_temp, time: s.last_report_at }];
       }
     }
-    return { ...r, ...s, spark };
+    return {
+      ...r,
+      ...s,
+      // tick/room:update 快照可能不含生效心跳配置，保留最近一次完整值
+      effective_schedule: s.effective_schedule ?? r.effective_schedule,
+      spark,
+    };
   });
 }
 

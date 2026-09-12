@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS rooms (
   status       TEXT NOT NULL DEFAULT 'online',  -- online / offline
   current_temp REAL,
   last_report_at INTEGER,
+  report_interval_ms INTEGER,   -- 期望上报周期覆盖；NULL 继承全局设置
+  offline_timeout_ms INTEGER,   -- 心跳超时阈值覆盖；NULL 继承全局设置
   created_at   INTEGER NOT NULL
 );
 
@@ -71,7 +73,47 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, priority);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
+
+// ---- 轻量迁移：为旧库补充心跳配置列 ----
+for (const col of ['report_interval_ms', 'offline_timeout_ms']) {
+  const exists = db.prepare('PRAGMA table_info(rooms)').all().some((c) => c.name === col);
+  if (!exists) db.exec(`ALTER TABLE rooms ADD COLUMN ${col} INTEGER`);
+}
+
+// ---- 全局心跳默认值 ----
+export const DEFAULT_REPORT_INTERVAL_MS = 5000;  // 正常上报周期
+export const DEFAULT_OFFLINE_TIMEOUT_MS = 15000; // 超时阈值（连续丢失约 3 拍才判离线，容忍短暂丢包）
+
+export function getSettings() {
+  const rows = db.prepare('SELECT key, value FROM settings').all();
+  const map = Object.fromEntries(rows.map((r) => [r.key, Number(r.value)]));
+  return {
+    report_interval_ms: map.report_interval_ms || DEFAULT_REPORT_INTERVAL_MS,
+    offline_timeout_ms: map.offline_timeout_ms || DEFAULT_OFFLINE_TIMEOUT_MS,
+  };
+}
+
+export function setSetting(key, value) {
+  db.prepare(
+    `INSERT INTO settings(key, value) VALUES(?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(key, String(value));
+}
+
+// 某冷库生效的心跳参数（冷库级覆盖优先于全局）
+export function effectiveSchedule(room) {
+  const g = getSettings();
+  return {
+    interval: room.report_interval_ms || g.report_interval_ms,
+    timeout: room.offline_timeout_ms || g.offline_timeout_ms,
+  };
+}
 
 export default db;
 
@@ -136,6 +178,20 @@ export function insertReading(roomId, temp, ts) {
     temp,
     ts
   );
+}
+
+/**
+ * 统一读数入口（未来接入真实网关时也只需调用这里）：
+ * 写入读数 + 更新当前温度/最后上报时间；若冷库此前离线则返回 wasOffline，
+ * 由调用方走上线恢复流程。没有新读数，就不会有任何"心跳"。
+ */
+export function recordReading(roomId, temp, ts) {
+  const room = getRoom(roomId);
+  const wasOffline = room && room.status === 'offline';
+  db.prepare('INSERT INTO readings (room_id, temp, recorded_at) VALUES (?,?,?)').run(roomId, temp, ts);
+  db.prepare('UPDATE rooms SET current_temp=?, last_report_at=?, status=? WHERE id=?')
+    .run(temp, ts, 'online', roomId);
+  return { room: getRoom(roomId), wasOffline };
 }
 
 // 采样间隔（与 seed.js / simulator.js 保持一致），用于时间桶降采样
