@@ -138,12 +138,35 @@ export function insertReading(roomId, temp, ts) {
   );
 }
 
-export function readingsSince(roomId, sinceTs, limit = 4000) {
+// 采样间隔（与 seed.js / simulator.js 保持一致），用于时间桶降采样
+const TICK_MS = 5000;
+
+export function readingsSince(roomId, sinceTs, maxPoints = 3600) {
+  const total = db
+    .prepare('SELECT COUNT(*) AS c FROM readings WHERE room_id = ? AND recorded_at >= ?')
+    .get(roomId, sinceTs).c;
+
+  // 点数不多时直接返回原始读数
+  if (total <= maxPoints) {
+    return db
+      .prepare(
+        `SELECT temp, recorded_at AS time FROM readings
+         WHERE room_id = ? AND recorded_at >= ?
+         ORDER BY recorded_at ASC`
+      )
+      .all(roomId, sinceTs);
+  }
+
+  // 超出上限：按时间桶聚合降采样（桶宽取采样间隔的整数倍），避免长窗口只取到前段数据
+  // 注意：绑定参数可能被推断为 REAL，必须 CAST 为 INTEGER，否则 SQLite 走浮点除法导致每行一组
+  const bucket = Math.ceil(total / maxPoints) * TICK_MS;
   return db
     .prepare(
-      `SELECT temp, recorded_at AS time FROM readings
+      `SELECT AVG(temp) AS temp, (recorded_at / CAST(? AS INTEGER)) * CAST(? AS INTEGER) AS time
+       FROM readings
        WHERE room_id = ? AND recorded_at >= ?
-       ORDER BY recorded_at ASC LIMIT ?`
+       GROUP BY recorded_at / CAST(? AS INTEGER)
+       ORDER BY time ASC`
     )
-    .all(roomId, sinceTs, limit);
+    .all(bucket, bucket, roomId, sinceTs, bucket);
 }

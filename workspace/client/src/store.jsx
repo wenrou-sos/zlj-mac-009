@@ -30,7 +30,7 @@ export function StoreProvider({ children }) {
     try {
       const [ov, al, tk, st] = await Promise.all([
         api.get('/overview?minutes=60'),
-        api.get('/alarms'),
+        api.get('/alarms?all=1'),
         api.get('/tasks'),
         api.get('/stats'),
       ]);
