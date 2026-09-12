@@ -28,6 +28,13 @@ export const fmtHM = (ts) => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
+export const fmtMDHM = (ts) => {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 export const ago = (ts) => {
   if (!ts) return '从未上报';
   const s = Math.floor((Date.now() - ts) / 1000);

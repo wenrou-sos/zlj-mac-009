@@ -69,6 +69,23 @@ router.put('/settings', (req, res) => {
   if (timeout < interval) {
     return res.status(400).json({ error: '离线超时阈值不能小于上报周期，否则会频繁误报离线' });
   }
+  // 全局变更后，按冷库覆盖值 + 新全局继承值组合出的生效参数也必须合法，
+  // 否则"只覆盖超时"或"只覆盖周期"的冷库会悄悄变成超时 < 周期
+  const conflicts = listRooms()
+    .map((r) => ({
+      name: r.name,
+      effInterval: r.report_interval_ms ?? interval,
+      effTimeout: r.offline_timeout_ms ?? timeout,
+    }))
+    .filter((c) => c.effTimeout < c.effInterval);
+  if (conflicts.length) {
+    return res.status(400).json({
+      error:
+        `保存后以下冷库的超时阈值将小于上报周期：${conflicts
+          .map((c) => `${c.name}（周期 ${(c.effInterval / 1000).toFixed(0)}s / 超时 ${(c.effTimeout / 1000).toFixed(0)}s）`)
+          .join('、')}。请先在下方按冷库调整或恢复继承。`,
+    });
+  }
   setSetting('report_interval_ms', interval);
   setSetting('offline_timeout_ms', timeout);
   res.json(getSettings());
@@ -110,9 +127,29 @@ router.get('/rooms/:id', (req, res) => {
 router.get('/rooms/:id/history', (req, res) => {
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).json({ error: '冷库不存在' });
-  const hours = Math.min(Number(req.query.hours) || 24, 72);
-  const data = readingsSince(room.id, now() - hours * HOUR_MS);
-  res.json({ room, min_temp: room.min_temp, max_temp: room.max_temp, points: data });
+  const hours = Math.min(Math.max(Number(req.query.hours) || 24, 1), 72);
+  const since = now() - hours * HOUR_MS;
+  const points = readingsSince(room.id, since);
+
+  // 实际数据可能短于请求窗口（例如系统刚启动 / 数据保留窗口限制），明确返回覆盖范围，
+  // 避免前端画出"看起来完整、实际只有一段"的曲线而没有任何提示
+  const oldest = db
+    .prepare('SELECT MIN(recorded_at) AS t FROM readings WHERE room_id = ?')
+    .get(room.id).t;
+  const availableFrom = oldest || now();
+  const effectiveSince = Math.max(since, availableFrom);
+  return res.json({
+    room,
+    min_temp: room.min_temp,
+    max_temp: room.max_temp,
+    requested_hours: hours,
+    retention_hours: 72,
+    available_from: availableFrom,
+    covered_from: points[0]?.time ?? effectiveSince,
+    covered_to: points[points.length - 1]?.time ?? now(),
+    partial: points.length > 0 && points[0].time - since > 60_000,
+    points,
+  });
 });
 
 // ---------- 告警 ----------

@@ -3,7 +3,7 @@ import {
   ResponsiveContainer, ComposedChart, Area, Line, ReferenceLine,
   XAxis, YAxis, CartesianGrid, Tooltip, Brush,
 } from 'recharts';
-import { api, fmtTime, fmtHM, ago } from '../api.js';
+import { api, fmtTime, fmtHM, fmtMDHM, ago } from '../api.js';
 import { useStore } from '../store.jsx';
 import { roomAlarmLevel, LEVEL, ALARM_TYPE } from '../labels.js';
 
@@ -11,6 +11,7 @@ const RANGES = [
   { h: 1, label: '近1小时' },
   { h: 6, label: '近6小时' },
   { h: 24, label: '近24小时' },
+  { h: 72, label: '近72小时' },
 ];
 
 export default function RoomDetail({ roomId, onClose }) {
@@ -128,6 +129,16 @@ export default function RoomDetail({ roomId, onClose }) {
             </div>
           </div>
 
+          {data?.partial && (
+            <div style={{
+              marginBottom: 12, padding: '9px 13px', borderRadius: 8, fontSize: 12.5,
+              background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.4)', color: '#fbbf24',
+            }}>
+              ⚠️ 请求了近 {data.requested_hours} 小时数据，但该冷库从 <b>{fmtMDHM(data.covered_from)}</b> 起才有读数
+              （数据保留上限 {data.retention_hours} 小时），曲线仅覆盖实际存在的时间段。
+            </div>
+          )}
+
           <div style={{ width: '100%', height: 300 }}>
             {data && data.points.length > 1 ? (
               <ResponsiveContainer>
@@ -140,7 +151,8 @@ export default function RoomDetail({ roomId, onClose }) {
                   </defs>
                   <CartesianGrid stroke="#1c2c4c" strokeDasharray="3 3" />
                   <XAxis
-                    dataKey="time" tickFormatter={hours > 6 ? (t) => fmtHM(t).slice(0, 2) + '时' : fmtHM}
+                    dataKey="time"
+                    tickFormatter={(t) => hours >= 24 ? fmtMDHM(t).slice(5) : fmtHM(t)}
                     stroke="#5f7396" fontSize={11} minTickGap={40}
                   />
                   <YAxis

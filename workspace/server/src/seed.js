@@ -13,7 +13,7 @@ const ROOMS = [
 ];
 
 const TICK_MS = 5000;          // 每 5 秒采样一次
-const HISTORY_HOURS = 24;
+const HISTORY_HOURS = 72;
 
 export function seedIfEmpty() {
   const count = db.prepare('SELECT COUNT(*) AS c FROM rooms').get().c;
@@ -28,23 +28,28 @@ export function seedIfEmpty() {
     insertRoom.run({ ...r, current_temp: r.target_temp, last_report_at: ts, created_at: ts });
   }
 
-  // 回填最近 24 小时历史读数，带昼夜负载波动 + 随机噪声
+  // 回填最近 72 小时历史读数（约 41.5 万行），带昼夜负载波动 + 随机噪声；事务批量写入
   const rooms = db.prepare('SELECT * FROM rooms').all();
   const start = ts - HISTORY_HOURS * 3600 * 1000;
-  for (const room of rooms) {
-    const drift = (room.id % 3 === 0 ? 0.6 : 0); // 部分冷库轻微偏温
-    for (let t = start; t <= ts; t += TICK_MS) {
-      const hour = new Date(t).getHours();
-      const daily = Math.sin(((hour - 4) / 24) * Math.PI * 2) * 0.8; // 白天开门/负载高时温度略升
-      const noise = (Math.random() - 0.5) * 0.35;
-      const temp = +(room.target_temp + daily + drift + noise).toFixed(2);
-      insertReading(room.id, temp, t);
+  const insertReading = db.prepare('INSERT INTO readings (room_id, temp, recorded_at) VALUES (?,?,?)');
+  const updateRoom = db.prepare('UPDATE rooms SET current_temp = ? WHERE id = ?');
+
+  const txn = db.transaction(() => {
+    for (const room of rooms) {
+      const drift = (room.id % 3 === 0 ? 0.6 : 0); // 部分冷库轻微偏温
+      let latest = room.target_temp;
+      for (let t = start; t <= ts; t += TICK_MS) {
+        const hour = new Date(t).getHours();
+        const daily = Math.sin(((hour - 4) / 24) * Math.PI * 2) * 0.8; // 白天开门/负载高时温度略升
+        const noise = (Math.random() - 0.5) * 0.35;
+        const temp = +(room.target_temp + daily + drift + noise).toFixed(2);
+        insertReading.run(room.id, temp, t);
+        latest = temp;
+      }
+      updateRoom.run(latest, room.id);
     }
-    db.prepare('UPDATE rooms SET current_temp = ? WHERE id = ?').run(
-      db.prepare('SELECT temp FROM readings WHERE room_id=? ORDER BY recorded_at DESC LIMIT 1').get(room.id).temp,
-      room.id
-    );
-  }
+  });
+  txn();
 
   // 清理超出保留窗口的读数
   pruneReadings();

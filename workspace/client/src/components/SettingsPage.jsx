@@ -87,6 +87,20 @@ export default function SettingsPage() {
 
   const cfgRoom = (id) => cfg?.rooms.find((r) => r.id === id);
 
+  // 用"编辑中尚未保存"的全局值，预览哪些冷库的生效组合会变成超时 < 周期
+  const pendingGlobal = {
+    intervalMs: Math.round(Number(global.interval) * 1000) || 0,
+    timeoutMs: Math.round(Number(global.timeout) * 1000) || 0,
+  };
+  const globalSelfConflict = pendingGlobal.timeoutMs < pendingGlobal.intervalMs;
+  const roomConflicts = (cfg?.rooms || [])
+    .map((r) => {
+      const effInterval = r.report_interval_ms ?? pendingGlobal.intervalMs;
+      const effTimeout = r.offline_timeout_ms ?? pendingGlobal.timeoutMs;
+      return effTimeout < effInterval ? { ...r, effInterval, effTimeout } : null;
+    })
+    .filter(Boolean);
+
   return (
     <div>
       <div className="page-title">
@@ -103,7 +117,13 @@ export default function SettingsPage() {
         <div className="panel-head">
           <h3>🌐 全局默认参数</h3>
           <div className="spacer" />
-          <button className="btn-primary" disabled={savingGlobal} onClick={saveGlobal}>保存全局参数</button>
+          <button
+            className="btn-primary"
+            disabled={savingGlobal || globalSelfConflict || roomConflicts.length > 0}
+            onClick={saveGlobal}
+          >
+            保存全局参数
+          </button>
         </div>
         <div style={{ padding: '18px 20px', display: 'flex', gap: 36, flexWrap: 'wrap' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -120,7 +140,7 @@ export default function SettingsPage() {
             <span style={{ color: 'var(--text-dim)' }}>离线超时阈值</span>
             <input
               type="number" min="5" max="300"
-              style={inputStyle}
+              style={{ ...inputStyle, borderColor: globalSelfConflict ? 'rgba(239,68,68,0.7)' : undefined }}
               value={global.timeout}
               onChange={(e) => setGlobal((g) => ({ ...g, timeout: e.target.value }))}
             />
@@ -130,6 +150,27 @@ export default function SettingsPage() {
             当前默认 5s 周期 / 15s 超时 ≈ 容忍连续 2 次丢包
           </span>
         </div>
+        {(globalSelfConflict || roomConflicts.length > 0) && (
+          <div style={{
+            margin: '0 20px 16px', padding: '10px 13px', borderRadius: 8, fontSize: 12.5,
+            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.45)', color: '#fca5a5',
+          }}>
+            {globalSelfConflict
+              ? '⛔ 全局超时阈值不能小于全局上报周期。'
+              : (
+                <>
+                  ⛔ 按当前输入保存后，以下冷库的超时将小于上报周期（其按冷库覆盖值与新全局继承值冲突），请先逐库调整或恢复继承：
+                  <div style={{ marginTop: 6 }}>
+                    {roomConflicts.map((c) => (
+                      <span key={c.id} className="badge red" style={{ marginRight: 8 }}>
+                        {c.name}：周期 {(c.effInterval / 1000).toFixed(0)}s / 超时 {(c.effTimeout / 1000).toFixed(0)}s
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+          </div>
+        )}
       </div>
 
       <div className="panel">

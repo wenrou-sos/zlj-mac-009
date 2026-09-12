@@ -22,7 +22,7 @@ npm run build        # 产物输出到 client/dist
 npm start            # http://localhost:3001 单端口提供完整应用
 ```
 
-SQLite 数据文件位于 `server/data/coldchain.db`，首次启动自动建表并回填近 24 小时模拟读数；删除该文件即可重置。
+SQLite 数据文件位于 `server/data/coldchain.db`，首次启动自动建表并回填近 72 小时模拟读数（事务批量写入，约 0.5s）；删除该文件即可重置。
 
 ## 功能说明
 
@@ -33,7 +33,8 @@ SQLite 数据文件位于 `server/data/coldchain.db`，首次启动自动建表�
 - 卡片按告警等级描边：一般（黄）→ 重要（橙）→ 紧急（红色脉冲）
 
 ### 2. 历史曲线
-点击冷库卡片打开，支持近 1 / 6 / 24 小时切换；Recharts 曲线带正常温区底色、上下限参考线、悬浮读数与时间刷选。
+点击冷库卡片打开，支持近 1 / 6 / 24 / 72 小时切换（长窗口自动降采样）；Recharts 曲线带正常温区底色、上下限参考线、悬浮读数与时间刷选。
+  当请求窗口超出系统实际数据范围时，图上显示黄色提示条并标明数据起始时间，不会静默截断。
 
 ### 3. 心跳看门狗与离线判定（`server/src/alarms.js`）
 - **判定依据是最后上报时间，而非模拟器状态**：看门狗每 5 秒扫描，某冷库超过其「离线超时阈值」仍无新读数即判离线
@@ -65,7 +66,7 @@ SQLite 数据文件位于 `server/data/coldchain.db`，首次启动自动建表�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/overview` | 冷库快照 + 近 60 分钟曲线点 |
-| GET | `/api/rooms/:id/history?hours=24` | 历史读数与阈值 |
+| GET | `/api/rooms/:id/history?hours=24` | 历史读数（≤72h，返回 `partial/covered_from` 标识实际覆盖范围） |
 | GET | `/api/alarms?all=1` | 活动告警 / 全部告警 |
 | POST | `/api/alarms/:id/ack` | 确认受理（停止升级） |
 | GET | `/api/tasks` | 工单列表（可按 status 过滤） |
@@ -84,7 +85,7 @@ SQLite 数据文件位于 `server/data/coldchain.db`，首次启动自动建表�
 server/src/
   index.js      服务入口（Express + WS + 定时任务）
   db.js         SQLite 建表与查询
-  seed.js       冷库档案与 24h 历史回填
+  seed.js       冷库档案与 72h 历史回填（事务）
   simulator.js  温度模拟（随机游走、昼夜波动、故障注入、离线抖动）
   alarms.js     阈值判定、告警创建/恢复、自动升级
   routes.js     REST API
